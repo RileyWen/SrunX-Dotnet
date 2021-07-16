@@ -1,68 +1,60 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using CommandLine;
 using Grpc.Core;
 using Grpc.Net.Client;
-using GrpcService;
+using SlurmxGrpc;
 
 namespace SrunX
 {
     public class Program
     {
-        private static async Task Main(string[] args)
+        private static int Main(string[] args)
         {
-            var mailboxName = GetMailboxName(args);
+            Console.CancelKeyPress += GrpcClient.OnCtrlC;
+            return Parser.Default.ParseArguments<CmdOptions>(args)
+                .MapResult(RealMain, _ => 1);
+        }
 
-            Console.WriteLine($"Creating client to mailbox '{mailboxName}'");
-            Console.WriteLine();
+        private static int RealMain(CmdOptions opts)
+        {
+            var requiredResource = new AllocatableResource();
+            requiredResource.CpuCoreLimit = opts.CpuCore;
 
-            var channel = GrpcChannel.ForAddress("https://localhost:5001");
-            var client = new Mailer.MailerClient(channel);
-
-            Console.WriteLine("Client created");
-            Console.WriteLine("Press escape to disconnect. Press any other key to forward mail.");
-
-            using (var call = client.Mailbox(headers: new Metadata { new Metadata.Entry("mailbox-name", mailboxName) }))
+            var memoryRegex = new Regex(@"(\d+)([MBG])");
+            var match = memoryRegex.Match(opts.Memory);
+            if (!match.Success)
             {
-                var responseTask = Task.Run(async () =>
-                {
-                    await foreach (var message in call.ResponseStream.ReadAllAsync())
-                    {
-                        Console.ForegroundColor = message.Reason == MailboxMessage.Types.Reason.Received ? ConsoleColor.White : ConsoleColor.Green;
-                        Console.WriteLine();
-                        Console.WriteLine(message.Reason == MailboxMessage.Types.Reason.Received ? "Mail received" : "Mail forwarded");
-                        Console.WriteLine($"New mail: {message.New}, Forwarded mail: {message.Forwarded}");
-                        Console.ResetColor();
-                    }
-                });
-
-                while (true)
-                {
-                    var result = Console.ReadKey(intercept: true);
-                    if (result.Key == ConsoleKey.Escape)
-                    {
-                        break;
-                    }
-
-                    await call.RequestStream.WriteAsync(new ForwardMailMessage());
-                }
-
-                Console.WriteLine("Disconnecting");
-                await call.RequestStream.CompleteAsync();
-                await responseTask;
+                log.Error(@"Memory should follow the pattern: \d+[MKBG]");
+                return 1;
             }
 
-            Console.WriteLine("Disconnected. Press any key to exit.");
-            Console.ReadKey();
+            requiredResource.MemoryLimitBytes = (match.Groups[2].Value) switch
+            {
+                "B" => ulong.Parse(match.Groups[1].Value),
+                "K" => ulong.Parse(match.Groups[1].Value) * 1024,
+                "M" => ulong.Parse(match.Groups[1].Value) * 1024 * 1024,
+                "G" => ulong.Parse(match.Groups[1].Value) * 1024 * 1024 * 1024,
+                _ => 0 // Impossible case
+            };
+
+            requiredResource.MemorySwLimitBytes = requiredResource.MemoryLimitBytes;
+
+            log.Debug($"{requiredResource}, {opts.ServerAddr}, {string.Join(" ", opts.RemoteCmd)}");
+
+            if (!GrpcClient.TryAllocateResource(requiredResource, "http://" + opts.ServerAddr, out var resourceInfo))
+                return 1;
+
+            if (!GrpcClient.ExecuteTask(resourceInfo, opts.RemoteCmd.ToArray()))
+                return 1;
+
+            return 0;
         }
 
-        private static string GetMailboxName(IReadOnlyList<string> args)
-        {
-            if (args.Count >= 1) return args[0];
-            
-            Console.WriteLine("No mailbox name provided. Using default name. Usage: dotnet run <name>.");
-            return "DefaultMailbox";
-
-        }
+        private static log4net.ILog log =
+            log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod()?.DeclaringType);
     }
 }

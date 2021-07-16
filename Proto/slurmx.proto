@@ -1,0 +1,186 @@
+syntax = "proto3";
+
+package SlurmxGrpc;
+
+message Negotiation {
+  uint32 version = 1;
+}
+
+message NegotiationRequest {
+  uint32 version = 1;
+}
+
+message NegotiationReply {
+  bool ok = 1;
+  string reason = 2; // Set when failed
+}
+
+
+// Match the definition of 'resource_t' in PublicHeader.h
+message AllocatableResource {
+  uint64 cpu_core_limit = 1;
+  uint64 memory_limit_bytes = 2;
+  uint64 memory_sw_limit_bytes = 3;
+}
+
+message ResourceAllocRequest {
+  AllocatableResource required_resource = 1;
+}
+
+message ResourceInfo {
+  bytes resource_uuid = 1;
+  uint32 node_index = 2;
+  string ipv4_addr = 3;
+  uint32 port = 4;
+}
+
+message ResourceAllocReply {
+  bool ok = 1;
+  oneof payload {
+    ResourceInfo res_info = 2;
+    string reason = 3;
+  }
+}
+
+message TaskInfo {
+  string executive_path = 1;
+  repeated string arguments = 2;
+
+  bytes resource_uuid = 3;
+}
+
+message IoRedirection {
+  string buf = 1;
+}
+
+message TaskExitStatus {
+  enum ExitReason {
+    Normal = 0;
+    Signal = 1;
+  }
+
+  ExitReason reason = 1;
+  uint32 value = 2;
+}
+
+message NewTaskResult {
+  bool ok = 1;
+  string reason = 2;
+}
+
+message SrunXStreamRequest{
+  enum Type {
+    NegotiationRequest = 0;
+    NewTask = 1;
+    Signal = 2;
+  }
+  Type type = 1;
+
+  oneof payload {
+    NegotiationRequest negotiation = 2;
+    TaskInfo task_info = 3;
+    uint32 signum = 4;
+  }
+}
+
+message SrunXStreamReply {
+  enum Type {
+    IoRedirection = 0;
+    ExitStatus = 1;
+    NewTaskResult = 2;
+    NegotiationReply = 3;
+  }
+  Type type = 1;
+
+  oneof payload {
+    IoRedirection io_redirection = 2 ;
+    TaskExitStatus task_exit_status = 3;
+    NewTaskResult new_task_result = 4;
+    NegotiationReply negotiation_reply = 5;
+  }
+}
+
+message SlurmXdRegisterRequest {
+  Negotiation header = 1;
+
+  uint32 port = 2;
+
+  AllocatableResource resource_total = 3;
+
+  /* Todo: Add fields describing what tasks the SlurmXd is still running and the current usage of this node in case that
+      from CtlXd's view, this node is down due to network problem and however this node is still running.
+  */
+}
+
+message SlurmXdRegisterResult {
+  bool ok = 1;
+  oneof payload {
+    // If ok is true
+    uint32 node_index = 2;
+
+    // If ok is false, reason is set.
+    string reason = 3;
+  }
+}
+
+message HeartbeatRequest {
+  bytes node_uuid = 1;
+}
+
+message HeartbeatReply {}
+
+message GrantResourceTokenRequest {
+  bytes resource_uuid = 1;
+  AllocatableResource allocated_resource = 2;
+}
+
+message GrantResourceTokenReply {
+  bool ok = 1;
+  string reason = 2;
+}
+
+message RevokeResourceTokenRequest {
+  bytes resource_uuid = 1;
+}
+
+message RevokeResourceTokenReply {
+  bool ok = 1;
+  string reason = 2;
+}
+
+message DeallocateResourceRequest {
+  uint32 node_index = 1;
+  bytes resource_uuid = 2;
+}
+
+message DeallocateResourceReply {
+  bool ok = 1;
+  string reason = 2 ;
+}
+
+// Todo: Divide service into two parts: one for SlurmXd and one for SrunX
+//  We need to distinguish the message sender
+//  and have some kind of authentication
+service SlurmCtlXd {
+  /* RPCs called from SlurmXd*/
+  rpc RegisterSlurmXd(SlurmXdRegisterRequest) returns (SlurmXdRegisterResult);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatReply);
+
+  /* When SlurmXd finishes executing a task, SlurmCtlXd will be informed to deallocate related resources. */
+  rpc DeallocateResource(DeallocateResourceRequest) returns(DeallocateResourceReply);
+
+
+  /* RPCs called from SrunX */
+  /* When SrunX request an interactive job, it will first request SrunX to allocate
+     the required resource and get the resource token. */
+  rpc AllocateResource(ResourceAllocRequest) returns(ResourceAllocReply);
+}
+
+service SlurmXd {
+  /* Called from SlurmCtlXd */
+  rpc GrantResourceToken(GrantResourceTokenRequest) returns (GrantResourceTokenReply);
+  rpc RevokeResourceToken(RevokeResourceTokenRequest) returns (RevokeResourceTokenReply);
+
+  /* Called from SrunX */
+  rpc SrunXStream(stream SrunXStreamRequest) returns (stream SrunXStreamReply);
+}

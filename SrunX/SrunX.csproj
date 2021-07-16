@@ -14,16 +14,24 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <Protobuf Include="..\Proto\mail.proto" GrpcServices="Client" />
+        <Protobuf Include="..\Proto\slurmx.proto" GrpcServices="Client" Link="Proto\slurmx.proto" />
     </ItemGroup>
 
     <ItemGroup>
+      <PackageReference Include="CommandLineParser" Version="2.8.0" />
       <PackageReference Include="Google.Protobuf" Version="3.17.3" />
       <PackageReference Include="Grpc.Net.Client" Version="2.38.0" />
       <PackageReference Include="Grpc.Tools" Version="2.38.1">
         <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         <PrivateAssets>all</PrivateAssets>
       </PackageReference>
+      <PackageReference Include="log4net" Version="2.0.12" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <None Update="Properties\log4net.config">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
     </ItemGroup>
 
 </Project>
