@@ -21,10 +21,16 @@ namespace SrunX
 
         private static int RealMain(CmdOptions opts)
         {
+            if (opts.Partition == "")
+            {
+                log.Error("Invalid Partition name!");
+                return 1;
+            }
+
             var requiredResource = new AllocatableResource();
             requiredResource.CpuCoreLimit = opts.CpuCore;
 
-            var memoryRegex = new Regex(@"(\d+)([MBG])");
+            var memoryRegex = new Regex(@"(\d+)([KMBG])");
             var match = memoryRegex.Match(opts.Memory);
             if (!match.Success)
             {
@@ -45,7 +51,8 @@ namespace SrunX
 
             log.Debug($"{requiredResource}, {opts.ServerAddr}, {string.Join(" ", opts.RemoteCmd)}");
 
-            if (!GrpcClient.TryAllocateResource(requiredResource, "http://" + opts.ServerAddr, out var resourceInfo))
+            if (!GrpcClient.TryAllocateResource(opts.Partition, requiredResource, "http://" + opts.ServerAddr,
+                out var resourceInfo))
                 return 1;
 
             if (!GrpcClient.ExecuteTask(resourceInfo, opts.RemoteCmd.ToArray()))

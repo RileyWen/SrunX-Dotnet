@@ -11,13 +11,15 @@ namespace SrunX
 {
     public class GrpcClient
     {
-        public static bool TryAllocateResource(in AllocatableResource requiredResource, in string serverAddr,
+        public static bool TryAllocateResource(in string partition, in AllocatableResource requiredResource,
+            in string serverAddr,
             out ResourceInfo resourceInfo)
         {
             var channel = GrpcChannel.ForAddress(serverAddr);
             var client = new SlurmCtlXd.SlurmCtlXdClient(channel);
 
-            var allocRequest = new ResourceAllocRequest {RequiredResource = requiredResource};
+            var allocRequest = new ResourceAllocRequest
+                {RequiredResource = requiredResource, PartitionName = partition};
             var allocResult = client.AllocateResource(allocRequest);
             if (allocResult.Ok)
             {
@@ -35,8 +37,7 @@ namespace SrunX
         {
             NegotiationWithSlurmxd,
             RequestNewTaskFromSlurmxd,
-            WaitForNewTaskReply,
-            WaitForIoRedirectionOrSignal,
+            WaitForIoRedirectionOrSignalOrTaskResult,
             Abort,
             Finish,
         }
@@ -49,7 +50,7 @@ namespace SrunX
             var ok = reader.MoveNext().Result;
             if (!ok)
             {
-                log.Error("Error while negotiation: stream cancelled");
+                log.Error("Error while ReadNext: stream cancelled");
                 state = failedState;
                 reply = null;
                 return false;
@@ -78,7 +79,7 @@ namespace SrunX
             var writer = stream.RequestStream;
             var reader = stream.ResponseStream;
 
-            var state = new SrunxStreamState();
+            SrunxStreamState state;
             state = SrunxStreamState.NegotiationWithSlurmxd;
 
             while (true)
@@ -124,27 +125,13 @@ namespace SrunX
                         };
 
                         writer.WriteAsync(request);
-                        state = SrunxStreamState.WaitForNewTaskReply;
+                        state = SrunxStreamState.WaitForIoRedirectionOrSignalOrTaskResult;
                         break;
                     }
 
-                    case SrunxStreamState.WaitForNewTaskReply:
+                    case SrunxStreamState.WaitForIoRedirectionOrSignalOrTaskResult:
                     {
-                        if (!ReadNextAndCheckType(reader, new[] {SrunXStreamReply.Types.Type.NewTaskResult},
-                            ref state, SrunxStreamState.Abort, out var reply))
-                            break;
-
-                        if (!reply.NewTaskResult.Ok)
-                            log.Error($"Error while Executing the new task: SlurmCtlXd: {reply.NewTaskResult.Reason}");
-
-                        state = reply.NewTaskResult.Ok
-                            ? SrunxStreamState.WaitForIoRedirectionOrSignal
-                            : SrunxStreamState.Abort;
-                        break;
-                    }
-
-                    case SrunxStreamState.WaitForIoRedirectionOrSignal:
-                    {
+                        bool taskCreated = false;
                         Task<SrunXStreamReply> readNextAsync = null;
                         Task waitCtrlCAsync = Task.Run(() => { CtrlCPressed.WaitOne(); });
                         while (true)
@@ -156,7 +143,8 @@ namespace SrunX
                                         new[]
                                         {
                                             SrunXStreamReply.Types.Type.IoRedirection,
-                                            SrunXStreamReply.Types.Type.ExitStatus
+                                            SrunXStreamReply.Types.Type.ExitStatus,
+                                            SrunXStreamReply.Types.Type.NewTaskResult
                                         },
                                         ref state, SrunxStreamState.Abort, out var reply);
                                     return reply;
@@ -169,8 +157,21 @@ namespace SrunX
                                 index = Task.WaitAny(readNextAsync);
                             if (index == 0)
                             {
+                                // When task is successfully created, IoRedirection may come earlier than NewTaskResult.
                                 var reply = readNextAsync.Result;
-                                if (reply.Type == SrunXStreamReply.Types.Type.IoRedirection)
+                                if (reply.Type == SrunXStreamReply.Types.Type.NewTaskResult)
+                                {
+                                    if (!reply.NewTaskResult.Ok)
+                                    {
+                                        log.Error(
+                                            $"Error while Executing the new task: SlurmCtlXd: {reply.NewTaskResult.Reason}");
+                                        state = SrunxStreamState.Abort;
+                                        break;
+                                    }
+
+                                    taskCreated = true;
+                                }
+                                else if (reply.Type == SrunXStreamReply.Types.Type.IoRedirection)
                                     Console.Write(reply.IoRedirection.Buf);
                                 else if (reply.Type == SrunXStreamReply.Types.Type.ExitStatus)
                                 {
@@ -185,17 +186,21 @@ namespace SrunX
                             else if (index == 1)
                             {
                                 waitCtrlCAsync = null;
-                                var request = new SrunXStreamRequest
+                                if (taskCreated)
                                 {
-                                    Type = SrunXStreamRequest.Types.Type.Signal,
-                                    Signum = 2
-                                };
-                                writer.WriteAsync(request);
+                                    var request = new SrunXStreamRequest
+                                    {
+                                        Type = SrunXStreamRequest.Types.Type.Signal,
+                                        Signum = 2
+                                    };
+                                    writer.WriteAsync(request);
+                                }
                             }
                         }
 
                         break;
                     }
+
                     case SrunxStreamState.Abort:
                         writer.CompleteAsync().Wait();
 
