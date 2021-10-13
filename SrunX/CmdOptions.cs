@@ -9,6 +9,7 @@ namespace SrunX
         [Option('m', Required = true)] public string Memory { get; set; }
         [Option('s', Required = true)] public string ServerAddr { get; set; }
         [Option('p', Required = true)] public string Partition { get; set; }
+        [Option('t', Required = true)] public string TimeLimit { get; set; }
         [Value(0, Min = 1, Required = true)] public IEnumerable<string> RemoteCmd { get; set; }
     }
 }
